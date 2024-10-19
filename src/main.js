@@ -11,6 +11,17 @@ window.startSimulation = async function () {
   }
 };
 
+window.stopSimulation = async function () {
+  try {
+      const response = await invoke('stop_simulation');
+      console.log(response); // Log the response from the Rust command
+      alert(response); // Show an alert with the response
+  } catch (error) {
+      console.error('Error starting simulation:', error);
+      alert('Error starting simulation: ' + error);
+  }
+};
+
 window.addEventListener("DOMContentLoaded", function() {
   function showContent(tabId) {
     console.log(tabId);

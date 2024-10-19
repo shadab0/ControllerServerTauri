@@ -1,8 +1,7 @@
-extern crate lazy_static;
-
 use core::{slice, time};
 use std::sync::Mutex;
 use rayon::ThreadPoolBuilder;
+use tauri::tray::TrayIconBuilder;
 use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::fileapi::{CreateFileW, OPEN_EXISTING};
 use winapi::um::handleapi::INVALID_HANDLE_VALUE;
@@ -101,44 +100,105 @@ fn start_simulation() -> String {
     }
 
     state.running = true;
+    let listener = TcpListener::bind("192.168.0.130:8080").unwrap();
+    let clients = Arc::new(std::sync::Mutex::new(0));
     let thread_pool = Arc::new(ThreadPoolBuilder::new().num_threads(4).build().unwrap());
 
-    // Start the simulation in a separate thread
-    let thread_pool_clone = Arc::clone(&thread_pool);
-    thread::spawn(move || {
-        let listener = TcpListener::bind("192.168.0.130:8080").unwrap();
-        println!("Server listening on 192.168.0.130:8080");
+    println!("Server listening on 192.168.0.130:8080");
 
-        for (client_id, stream) in listener.incoming().enumerate() {
-            if let Ok(stream) = stream {
-                let thread_pool_clone = Arc::clone(&thread_pool_clone);
-                let threadclone = Arc::clone(&thread_pool_clone);
-                thread_pool_clone.install(move || {
-                    handle_client(stream, client_id + 1, threadclone);
-                });
+    for stream in listener.incoming() {
+        let stream = stream.unwrap();
+
+        let client_count = {
+            let mut count = clients.lock().unwrap();
+            if *count >= MAX_CLIENTS {
+                println!("Maximum clients reached, rejecting connection.");
+                continue;
             }
-        }
-    });
+            *count += 1;
+            *count
+        };
+
+        let thread_pool = Arc::clone(&thread_pool);
+
+        println!("Client {} connected.", client_count);
+
+        let clients_clone = Arc::clone(&clients);
+        thread::spawn(move || {
+            handle_client(stream, client_count.clone(), thread_pool);
+            unsafe { unplug(client_count.clone() as u32); }
+            let mut count = clients_clone.lock().unwrap();
+            *count -= 1;
+            println!("Client {} disconnected, {} client(s) remaining.", client_count, *count);
+        });
+    }
 
     "Simulation started!".to_string()
 }
 
 #[tauri::command]
 fn stop_simulation() -> String {
+
+    for i in 1..5 {
+        let result = std::panic::catch_unwind(|| {
+            unsafe { unplug(i) }
+        });
+
+        match result {
+            Ok(0) => {
+                return format!("Failed to unplug controller {}", i);
+            }
+            Ok(_) => {
+                println!("Successfully unplugged controller {}", i);
+            }
+            Err(e) => {
+                return format!("Failed to unplug controller {}: panic occurred - {:?}", i, e);
+            }
+        }
+    }
+
     let mut state = SIMULATION_STATE.lock().unwrap();
     if !state.running {
         return "Simulation is not running!".to_string();
     }
 
     state.running = false;
+
+
+
     // Logic to stop the simulation if needed
     "Simulation stopped!".to_string()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+
+    for i in 1..5 {
+        let result = std::panic::catch_unwind(|| {
+            unsafe { unplug(i) }
+        });
+
+        // match result {
+        //     Ok(0) => {
+        //         return format!("Failed to unplug controller {}", i);
+        //     }
+        //     Ok(_) => {
+        //         println!("Successfully unplugged controller {}", i);
+        //     }
+        //     Err(e) => {
+        //         return format!("Failed to unplug controller {}: panic occurred - {:?}", i, e);
+        //     }
+        // }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .setup(|app| {
+            TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .build(app)?;
+            Ok(())
+            })
         .invoke_handler(tauri::generate_handler![greet, start_simulation, stop_simulation])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
