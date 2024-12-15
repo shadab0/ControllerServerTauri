@@ -27,4 +27,3 @@ windows = { version = "0.58", features = [ "Win32", "Win32_Devices", "Win32_Devi
 rayon = "1.5"
 lazy_static = "1.4"
 local-ip-address = "=0.6.3"
-

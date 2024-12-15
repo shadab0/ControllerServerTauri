@@ -4,6 +4,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 use rayon::ThreadPoolBuilder;
 use tauri::tray::TrayIconBuilder;
+use winapi::ctypes::c_int;
 use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::fileapi::{CreateFileW, OPEN_EXISTING};
 use winapi::um::handleapi::INVALID_HANDLE_VALUE;
@@ -14,7 +15,7 @@ use winapi::um::winnt::{ FILE_READ_DATA, FILE_WRITE_DATA, GENERIC_READ, GENERIC_
 use winapi::um::setupapi::*;
 use winapi::shared::guiddef::GUID;
 use winapi::shared::minwindef::{BOOL, DWORD, LPDWORD, LPVOID, UCHAR, UINT, ULONG, WORD};
-use winapi::um::winuser::{SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP};
+use winapi::um::winuser::{INPUT_u, MapVirtualKeyW, SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, LPINPUT};
 use std::mem::{self, zeroed};
 use std::alloc::{alloc, dealloc, Layout};
 use std::net::{TcpListener, TcpStream};
@@ -23,6 +24,10 @@ use std::io::Read;
 use std::sync::Arc;
 use lazy_static::lazy_static;
 use local_ip_address::local_ip;
+use inputbot::{
+    BlockInput::*,
+    KeybdKey::*
+};
 
 const MAX_CLIENTS: usize = 4;
 const BUFFER_SIZE: usize = 17;
@@ -505,7 +510,7 @@ fn handle_client(mut stream: TcpStream, client_id: usize, thread_pool: Arc<rayon
     loop {
         match stream.read(&mut buffer) {
             Ok(size) => {
-                print!("{:?}", buffer);
+                //print!("{:?}", buffer);
                 if size == 0 {
                     println!("Client {} disconnected.", client_id);
                     break;
@@ -633,41 +638,61 @@ lazy_static! {
 }
 
 pub fn key_down(virtual_key: i32) {  
-    unsafe {
+
+
+        let keybd: KEYBDINPUT = unsafe {
+            KEYBDINPUT {
+                wVk: 0,
+                wScan: MapVirtualKeyW(virtual_key as u32, 0) as u16,
+                dwFlags: 0x0008,
+                time: 0,
+                dwExtraInfo: 0,
+            }
+        };
+    
+        // We need an "empty" winapi struct to union-ize
+        let mut input_u: INPUT_u = unsafe { std::mem::zeroed() };
+    
+        unsafe {
+            *input_u.ki_mut() = keybd;
+        }
+    
         let mut input = INPUT {
             type_: INPUT_KEYBOARD,
-            u: mem::zeroed(),
+            u: input_u,
         };
-        *input.u.ki_mut() = KEYBDINPUT {
-            wVk: virtual_key as u16,
-            dwFlags: 0, // Key down
-            dwExtraInfo: 0,
-            wScan: 0,
-            time: 0,
-        };
-
-        SendInput(1, &mut input, mem::size_of::<INPUT>() as i32);
-    }
+    
+        unsafe { SendInput(1, &mut input as LPINPUT, size_of::<INPUT>() as c_int) };
+    
+    
 }
 
 /// Release a held key by sending a key-up event and removing it from the held set.
 pub fn key_up(virtual_key: i32) {
 
-        unsafe {
-            let mut input = INPUT {
-                type_: INPUT_KEYBOARD,
-                u: mem::zeroed(),
-            };
-            *input.u.ki_mut() = KEYBDINPUT {
-                wVk: virtual_key as u16,
-                dwFlags: KEYEVENTF_KEYUP, // Key up
-                dwExtraInfo: 0,
-                wScan: 0,
-                time: 0,
-            };
-
-            SendInput(1, &mut input, mem::size_of::<INPUT>() as i32);
+    let keybd: KEYBDINPUT = unsafe {
+        KEYBDINPUT {
+            wVk: 0,
+            wScan: MapVirtualKeyW(virtual_key as u32, 0) as u16,
+            dwFlags: 0x0008 | 0x0002,
+            time: 0,
+            dwExtraInfo: 0,
         }
+    };
+
+    // We need an "empty" winapi struct to union-ize
+    let mut input_u: INPUT_u = unsafe { std::mem::zeroed() };
+
+    unsafe {
+        *input_u.ki_mut() = keybd;
+    }
+
+    let mut input = INPUT {
+        type_: INPUT_KEYBOARD,
+        u: input_u,
+    };
+
+    unsafe { SendInput(1, &mut input as LPINPUT, size_of::<INPUT>() as c_int) };
 }
 
 
