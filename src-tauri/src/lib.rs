@@ -1,5 +1,7 @@
 use core::{slice, time};
+use std::collections::HashSet;
 use std::sync::Mutex;
+use std::time::Duration;
 use rayon::ThreadPoolBuilder;
 use tauri::tray::TrayIconBuilder;
 use winapi::um::errhandlingapi::GetLastError;
@@ -11,7 +13,8 @@ use winapi::um::winioctl::{FILE_DEVICE_BUS_EXTENDER, METHOD_BUFFERED};
 use winapi::um::winnt::{ FILE_READ_DATA, FILE_WRITE_DATA, GENERIC_READ, GENERIC_WRITE, HANDLE, WCHAR};
 use winapi::um::setupapi::*;
 use winapi::shared::guiddef::GUID;
-use winapi::shared::minwindef::{BOOL, DWORD, LPDWORD, LPVOID, UCHAR, UINT, ULONG};
+use winapi::shared::minwindef::{BOOL, DWORD, LPDWORD, LPVOID, UCHAR, UINT, ULONG, WORD};
+use winapi::um::winuser::{SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP};
 use std::mem::{self, zeroed};
 use std::alloc::{alloc, dealloc, Layout};
 use std::net::{TcpListener, TcpStream};
@@ -19,9 +22,10 @@ use std::{ptr, thread};
 use std::io::Read;
 use std::sync::Arc;
 use lazy_static::lazy_static;
+use local_ip_address::local_ip;
 
 const MAX_CLIENTS: usize = 4;
-const BUFFER_SIZE: usize = 16;
+const BUFFER_SIZE: usize = 17;
 
 const MAX_PATH: usize = 260;
 pub const AXIS_MAX: i16 = 32767;
@@ -40,13 +44,6 @@ const IOCTL_BUSENUM_PLUGIN_HARDWARE: u32 = ctl_code(FILE_DEVICE_BUSENUM, IOCTL_B
 const IOCTL_BUSENUM_UNPLUG_HARDWARE: u32 = ctl_code(FILE_DEVICE_BUSENUM, IOCTL_BUSENUM_BASE + 0x1, METHOD_BUFFERED, FILE_WRITE_DATA);
 const IOCTL_BUSENUM_REPORT_HARDWARE: u32 = ctl_code(FILE_DEVICE_BUSENUM, IOCTL_BUSENUM_BASE + 0x3, METHOD_BUFFERED, FILE_WRITE_DATA | FILE_READ_DATA);
 const MAX_NUMBER_XBOX_CTRLS: usize = 4; 
-use rayon::ThreadPool;
-
-
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
 
 
 #[derive(Clone)]
@@ -100,11 +97,12 @@ fn start_simulation() -> String {
     }
 
     state.running = true;
-    let listener = TcpListener::bind("192.168.0.130:8080").unwrap();
+    let my_local_ip = local_ip().unwrap();
+    let listener = TcpListener::bind(my_local_ip.to_string() + ":40405").unwrap();
     let clients = Arc::new(std::sync::Mutex::new(0));
     let thread_pool = Arc::new(ThreadPoolBuilder::new().num_threads(4).build().unwrap());
 
-    println!("Server listening on 192.168.0.130:8080");
+    println!("{}:40405", my_local_ip.to_string());
 
     for stream in listener.incoming() {
         let stream = stream.unwrap();
@@ -173,23 +171,23 @@ fn stop_simulation() -> String {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
 
-    for i in 1..5 {
-        let result = std::panic::catch_unwind(|| {
-            unsafe { unplug(i) }
-        });
+    // for i in 1..5 {
+    //     let result = std::panic::catch_unwind(|| {
+    //         unsafe { unplug(i) }
+    //     });
 
-        // match result {
-        //     Ok(0) => {
-        //         return format!("Failed to unplug controller {}", i);
-        //     }
-        //     Ok(_) => {
-        //         println!("Successfully unplugged controller {}", i);
-        //     }
-        //     Err(e) => {
-        //         return format!("Failed to unplug controller {}: panic occurred - {:?}", i, e);
-        //     }
-        // }
-    }
+    //     // match result {
+    //     //     Ok(0) => {
+    //     //         return format!("Failed to unplug controller {}", i);
+    //     //     }
+    //     //     Ok(_) => {
+    //     //         println!("Successfully unplugged controller {}", i);
+    //     //     }
+    //     //     Err(e) => {
+    //     //         return format!("Failed to unplug controller {}: panic occurred - {:?}", i, e);
+    //     //     }
+    //     // }
+    // }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -199,7 +197,7 @@ pub fn run() {
                 .build(app)?;
             Ok(())
             })
-        .invoke_handler(tauri::generate_handler![greet, start_simulation, stop_simulation])
+        .invoke_handler(tauri::generate_handler![start_simulation, stop_simulation])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -488,7 +486,7 @@ pub unsafe fn unplug(user_index: UINT) -> BOOL {
 
 
 fn handle_client(mut stream: TcpStream, client_id: usize, thread_pool: Arc<rayon::ThreadPool>) {
-    let mut buffer: [u8; 16] = [0; BUFFER_SIZE];
+    let mut buffer: [u8; 17] = [0; BUFFER_SIZE];
     let mut device_buffer: [u8; 28] = [0; 28];
     let mut gamepad = unsafe { mem::zeroed::<XinputGamepad>() };
     let user_index = client_id - 1;
@@ -502,9 +500,12 @@ fn handle_client(mut stream: TcpStream, client_id: usize, thread_pool: Arc<rayon
 
     unsafe { print!("{}",plug_in(client_id as u32)); }
 
+    let mut runfire = true;
+
     loop {
         match stream.read(&mut buffer) {
             Ok(size) => {
+                print!("{:?}", buffer);
                 if size == 0 {
                     println!("Client {} disconnected.", client_id);
                     break;
@@ -522,6 +523,15 @@ fn handle_client(mut stream: TcpStream, client_id: usize, thread_pool: Arc<rayon
                     continue;
                 }
 
+                if buffer[16]== 1 {
+                    if buffer[12] == 1 {
+                        key_down(gamepad.w_buttons.into());
+                        continue;
+                    }
+                    
+                    key_up(gamepad.w_buttons.into());
+                }
+
                 {
                     let mut gamepad_data =  G_GAMEPAD.lock().unwrap(); 
                     if buffer[14] == 0
@@ -535,6 +545,8 @@ fn handle_client(mut stream: TcpStream, client_id: usize, thread_pool: Arc<rayon
                     else if buffer[14] == 1 {
                         gamepad_data[user_index].s_thumb_lx = gamepad.s_thumb_lx;
                         gamepad_data[user_index].s_thumb_ly = gamepad.s_thumb_ly;
+                        // gamepad_data[user_index].b_left_trigger =  gamepad.b_left_trigger;
+                        // gamepad_data[user_index].b_right_trigger =  gamepad.b_right_trigger;
                        
                         thread_pool.install(|| {
                             x_output_set_state(&gamepad_data[user_index].clone(), &mut device_buffer.clone());
@@ -543,6 +555,26 @@ fn handle_client(mut stream: TcpStream, client_id: usize, thread_pool: Arc<rayon
                     else {
                         gamepad_data[user_index].s_thumb_rx = gamepad.s_thumb_rx;
                         gamepad_data[user_index].s_thumb_ry = gamepad.s_thumb_ry;  
+                        // gamepad_data[user_index].b_left_trigger =  gamepad.b_left_trigger;
+                        // gamepad_data[user_index].b_right_trigger =  gamepad.b_right_trigger;
+                        
+
+                        if (gamepad.s_thumb_rx != 0 || gamepad.s_thumb_ry != 0) && runfire {
+                            gamepad_data[user_index].w_buttons &= !(0x0200);
+                            gamepad_data[user_index].w_buttons |= (0x0200) * 1 as u16;
+                            gamepad_data[user_index].b_left_trigger =  gamepad.b_left_trigger;
+                            gamepad_data[user_index].b_right_trigger =  gamepad.b_right_trigger;
+                            x_output_set_state(&gamepad_data[user_index].clone(), &mut device_buffer.clone());
+                            runfire = false;
+                        }
+                        else if gamepad.s_thumb_rx == 0 && gamepad.s_thumb_ry == 0 && !runfire {
+                            gamepad_data[user_index].w_buttons &= !(0x0200);
+                            gamepad_data[user_index].w_buttons |= (0x0200) * 0 as u16;
+                            gamepad_data[user_index].b_left_trigger =  gamepad.b_left_trigger;
+                            gamepad_data[user_index].b_right_trigger =  gamepad.b_right_trigger;
+                            x_output_set_state(&gamepad_data[user_index].clone(), &mut device_buffer.clone());
+                            runfire = true;
+                        }
 
                         thread_pool.install(|| {
                             x_output_set_state(&gamepad_data[user_index].clone(), &mut device_buffer.clone());
@@ -595,4 +627,49 @@ pub fn x_output_set_state(p_gamepad: &XinputGamepad, buffer: &mut [u8; 28], ) ->
 
     true
 }
+
+lazy_static! {
+    static ref HELD_KEYS: Arc<Mutex<HashSet<i32>>> = Arc::new(Mutex::new(HashSet::new()));
+}
+
+pub fn key_down(virtual_key: i32) {  
+    unsafe {
+        let mut input = INPUT {
+            type_: INPUT_KEYBOARD,
+            u: mem::zeroed(),
+        };
+        *input.u.ki_mut() = KEYBDINPUT {
+            wVk: virtual_key as u16,
+            dwFlags: 0, // Key down
+            dwExtraInfo: 0,
+            wScan: 0,
+            time: 0,
+        };
+
+        SendInput(1, &mut input, mem::size_of::<INPUT>() as i32);
+    }
+}
+
+/// Release a held key by sending a key-up event and removing it from the held set.
+pub fn key_up(virtual_key: i32) {
+
+        unsafe {
+            let mut input = INPUT {
+                type_: INPUT_KEYBOARD,
+                u: mem::zeroed(),
+            };
+            *input.u.ki_mut() = KEYBDINPUT {
+                wVk: virtual_key as u16,
+                dwFlags: KEYEVENTF_KEYUP, // Key up
+                dwExtraInfo: 0,
+                wScan: 0,
+                time: 0,
+            };
+
+            SendInput(1, &mut input, mem::size_of::<INPUT>() as i32);
+        }
+}
+
+
+
 
