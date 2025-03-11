@@ -24,10 +24,6 @@ use std::io::Read;
 use std::sync::Arc;
 use lazy_static::lazy_static;
 use local_ip_address::local_ip;
-use inputbot::{
-    BlockInput::*,
-    KeybdKey::*
-};
 
 const MAX_CLIENTS: usize = 4;
 const BUFFER_SIZE: usize = 17;
@@ -541,10 +537,19 @@ fn handle_client(mut stream: TcpStream, client_id: usize, thread_pool: Arc<rayon
                     let mut gamepad_data =  G_GAMEPAD.lock().unwrap(); 
                     if buffer[14] == 0
                     {
+                        // if(gamepad.w_buttons == 0x4000){
+                        //     gamepad_data[user_index].w_buttons &= !(0x4000);
+                        //     gamepad_data[user_index].w_buttons |= (0x4000) * 1 as u16;
+                        //     gamepad_data[user_index].b_left_trigger =  gamepad.b_left_trigger;
+                        //     gamepad_data[user_index].b_right_trigger =  gamepad.b_right_trigger;
+                        //     x_output_set_state(&gamepad_data[user_index].clone(), &mut device_buffer.clone());
+                        //     continue;
+                        // }
+
                         gamepad_data[user_index].w_buttons &= if buffer[13] != 1 { !gamepad.w_buttons } else { 0xFFF0 };
                         gamepad_data[user_index].w_buttons |= if buffer[13] != 1 { gamepad.w_buttons * buffer[12] as u16 } else { gamepad.w_buttons };
-                        gamepad_data[user_index].b_left_trigger =  gamepad.b_left_trigger;
-                        gamepad_data[user_index].b_right_trigger =  gamepad.b_right_trigger;
+                        gamepad_data[user_index].b_left_trigger = if buffer[13] == 2 { gamepad.b_left_trigger } else { gamepad_data[user_index].b_left_trigger };
+                        gamepad_data[user_index].b_right_trigger = if buffer[13] == 3 { gamepad.b_right_trigger } else { gamepad_data[user_index].b_right_trigger };
                         x_output_set_state(&gamepad_data[user_index].clone(), &mut device_buffer.clone());
                     }
                     else if buffer[14] == 1 {
@@ -562,24 +567,6 @@ fn handle_client(mut stream: TcpStream, client_id: usize, thread_pool: Arc<rayon
                         gamepad_data[user_index].s_thumb_ry = gamepad.s_thumb_ry;  
                         // gamepad_data[user_index].b_left_trigger =  gamepad.b_left_trigger;
                         // gamepad_data[user_index].b_right_trigger =  gamepad.b_right_trigger;
-                        
-
-                        if (gamepad.s_thumb_rx != 0 || gamepad.s_thumb_ry != 0) && runfire {
-                            gamepad_data[user_index].w_buttons &= !(0x0200);
-                            gamepad_data[user_index].w_buttons |= (0x0200) * 1 as u16;
-                            gamepad_data[user_index].b_left_trigger =  gamepad.b_left_trigger;
-                            gamepad_data[user_index].b_right_trigger =  gamepad.b_right_trigger;
-                            x_output_set_state(&gamepad_data[user_index].clone(), &mut device_buffer.clone());
-                            runfire = false;
-                        }
-                        else if gamepad.s_thumb_rx == 0 && gamepad.s_thumb_ry == 0 && !runfire {
-                            gamepad_data[user_index].w_buttons &= !(0x0200);
-                            gamepad_data[user_index].w_buttons |= (0x0200) * 0 as u16;
-                            gamepad_data[user_index].b_left_trigger =  gamepad.b_left_trigger;
-                            gamepad_data[user_index].b_right_trigger =  gamepad.b_right_trigger;
-                            x_output_set_state(&gamepad_data[user_index].clone(), &mut device_buffer.clone());
-                            runfire = true;
-                        }
 
                         thread_pool.install(|| {
                             x_output_set_state(&gamepad_data[user_index].clone(), &mut device_buffer.clone());
