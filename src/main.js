@@ -2,9 +2,9 @@ const { invoke } = window.__TAURI__.core;
 
 window.startSimulation = async function () {
   try {
-      const response = await invoke('start_simulation');
-      console.log(response); // Log the response from the Rust command
-      alert(response); // Show an alert with the response
+      const response = await invoke('start_server');
+      console.log(response);
+      alert(response); 
   } catch (error) {
       console.error('Error starting simulation:', error);
       alert('Error starting simulation: ' + error);
@@ -13,9 +13,9 @@ window.startSimulation = async function () {
 
 window.stopSimulation = async function () {
   try {
-      const response = await invoke('stop_simulation');
-      console.log(response); // Log the response from the Rust command
-      alert(response); // Show an alert with the response
+      const response = await invoke('stop_server');
+      console.log(response); 
+      alert(response); 
   } catch (error) {
       console.error('Error starting simulation:', error);
       alert('Error starting simulation: ' + error);
@@ -26,15 +26,71 @@ window.addEventListener("DOMContentLoaded", function() {
   function showContent(tabId) {
     console.log(tabId);
 
-    const contents = document.querySelectorAll('.tab-content');
-    contents.forEach(content => {
-        content.classList.remove('active');
-    });
+    document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+    document.getElementById(tabId).classList.add('active');
 
-    const selectedContent = document.getElementById(tabId);
-    selectedContent.classList.add('active');
+    document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+    clickedTab.classList.add('active');
   }
+
   window.showContent = showContent;
+
+  async function disconnectClient(slot) {
+    console.log(slot);
+    await invoke('disconnect_client_by_index', { index: slot });
+    renderClients();
+  }
+
+  window.disconnectClient = disconnectClient;
+
+  async function renderClients() {
+    try {
+      const clients = await invoke('get_connected_clients');
+      console.log(clients);
+      const listContainer = document.getElementById('client-list');
+     
+      listContainer.innerHTML = '';
+
+      clients.forEach(client => {
+        const card = document.createElement('div');
+        card.className = 'client-card';
+
+        const info = document.createElement('span');
+        info.className = 'client-info';
+        info.innerText = `${client.ip} → Slot ${client.slot}`;
+
+        const btn = document.createElement('button');
+        btn.className = 'disconnect-btn';
+        btn.innerText = 'Disconnect';
+        btn.onclick = () => disconnectClient(client.slot);
+
+        card.appendChild(info);
+        card.appendChild(btn);
+
+        listContainer.appendChild(card);
+      });
+    } catch (e) {
+      console.error('Failed to load clients:', e);
+    }
+  }
+
+  async function renderIp() {
+    const ip = await invoke('get_server');
+    console.log(ip);
+    const serverIp = document.getElementById(`server-ip`);
+    const serverPort = document.getElementById(`server-port`);
+    serverIp.value = ip.ip;
+    serverPort.value = ip.port;
+  }
+
+  window.renderClients = renderClients;
+  window.renderIp = renderIp;
+
+  setInterval(() => {
+  renderClients();
+  renderIp();
+}, 3000);
+
 });
 
 

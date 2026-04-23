@@ -1,8 +1,8 @@
 [package]
-name = "controller-server-tauri"
-version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+name = "controller-server"
+version = "1.1.0"
+description = "Xbox Virtual Controller"
+authors = ["shadab niyazi"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -25,5 +25,7 @@ serde_json = "1"
 winapi = { version = "0.3", features = ["setupapi", "hidsdi", "fileapi", "winioctl", "errhandlingapi", "handleapi", "ioapiset", "winuser"] }
 windows = { version = "0.58", features = [ "Win32", "Win32_Devices", "Win32_Devices_DeviceAndDriverInstallation", "Win32_System", "Win32_System_IO", "Win32_Storage", "Win32_Storage_FileSystem" ] }
 rayon = "1.5"
-lazy_static = "1.4"
-local-ip-address = "=0.6.3"
+lazy_static = "1.4" 
+local-ip-address = "=0.6.3" 
+tokio = { version = "1.45.1",  features = ["full"] }
+tokio-util = "0.7.15"

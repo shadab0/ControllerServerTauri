@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "controller-server-tauri",
+  "productName": "Controller Server",
   "version": "0.1.0",
   "identifier": "com.controller-server-tauri.app",
   "build": {
@@ -10,7 +10,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "controller-server-tauri",
+        "title": "controller-server",
         "width": 800,
         "height": 600
       }
