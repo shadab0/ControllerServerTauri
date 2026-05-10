@@ -1,8 +1,7 @@
-use std::{string, sync::Arc};
+use std::{sync::Arc, time::Instant};
 use lazy_static::lazy_static;
 use serde::Serialize;
-use tokio::{net::TcpListener, sync::{Mutex, Notify}};
-use tokio_util::sync::CancellationToken;
+use tokio::sync::{Mutex, Notify};
 use winapi::{shared::guiddef::GUID, um::{handleapi::INVALID_HANDLE_VALUE, winioctl::{FILE_DEVICE_BUS_EXTENDER, METHOD_BUFFERED}, winnt::{FILE_READ_DATA, FILE_WRITE_DATA}}};
 
 pub const MAX_CLIENTS: usize = 4;
@@ -53,7 +52,12 @@ pub struct BusenumUnplugHardware {
 pub struct ClientSlot {
     pub occupied: bool,
     pub client_number: Option<usize>,
+    pub last_sequence: u32,
+    pub addr: Option<std::net::SocketAddr>,
+    pub last_packet_time: Option<Instant>,
 }
+
+// UdpClientInfo removed since data is in ClientSlot
 
 #[derive(Serialize, Clone)]
 pub struct ServerInfo {
@@ -63,7 +67,6 @@ pub struct ServerInfo {
 
 #[derive(Clone)]
 pub struct ListenerState {
-    pub listener: Arc<Mutex<Option<Arc<TcpListener>>>>,
     pub notify: Arc<Notify>,
 }
 
@@ -80,27 +83,13 @@ pub static mut G_V_DEVICE: [bool; MAX_CLIENTS] = [false; MAX_CLIENTS];
 pub static mut BUS_HANDLE: HANDLE = INVALID_HANDLE;
 
 lazy_static! {
-    pub static ref G_GAMEPAD: Mutex<[XinputGamepad; MAX_CLIENTS]> = Mutex::new([XinputGamepad {
-        w_buttons: 0,
-        b_left_trigger: 0,
-        b_right_trigger: 0,
-        s_thumb_lx: 0,
-        s_thumb_ly: 0,
-        s_thumb_rx: 0,
-        s_thumb_ry: 0,
-    }; MAX_CLIENTS]);
-    //pub static ref EXEC_SEMAPHORE: Arc<Semaphore> = Arc::new(Semaphore::const_new(4));
-
-    pub static ref CLIENT_TOKENS: Arc<[Mutex<CancellationToken>; MAX_CLIENTS]> =
-    Arc::new(std::array::from_fn(|_| Mutex::new(CancellationToken::new())));
-
     pub static ref GLOBAL_LISTENER: Mutex<Option<ListenerState>> = Mutex::new(None);
 
     pub static ref CLIENT_SLOTS: Mutex<[ClientSlot; MAX_CLIENTS]> = Mutex::new([
-        ClientSlot { occupied: false, client_number: None },
-        ClientSlot { occupied: false, client_number: None },
-        ClientSlot { occupied: false, client_number: None },
-        ClientSlot { occupied: false, client_number: None },
+        ClientSlot { occupied: false, client_number: None, last_sequence: 0, addr: None, last_packet_time: None },
+        ClientSlot { occupied: false, client_number: None, last_sequence: 0, addr: None, last_packet_time: None },
+        ClientSlot { occupied: false, client_number: None, last_sequence: 0, addr: None, last_packet_time: None },
+        ClientSlot { occupied: false, client_number: None, last_sequence: 0, addr: None, last_packet_time: None },
     ]);
 
     pub static ref CONNECTED_CLIENTS: Mutex<Vec<ClientInfo>> = Mutex::new(Vec::new());

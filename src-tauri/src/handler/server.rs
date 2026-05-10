@@ -1,12 +1,11 @@
-use std::{any::Any, net::SocketAddr, sync::Arc};
-use tokio::{net::TcpListener, sync::{Mutex, Notify}};
+use std::{any::Any, net::SocketAddr, sync::Arc, time::{Duration, Instant}};
+use tokio::{net::UdpSocket, sync::Notify};
 use local_ip_address::local_ip;
-use tokio_util::sync::CancellationToken;
-use crate::{handler::client::ClientHandler, types::{ClientInfo, ListenerState, CLIENT_SLOTS, CLIENT_TOKENS, CONNECTED_CLIENTS, GLOBAL_LISTENER, MAX_CLIENTS, SERVER_IP}, vbus::driver::{ControllerDevice, VBusDriver}};
+use crate::{types::{ClientInfo, ListenerState, XinputGamepad, CLIENT_SLOTS, CONNECTED_CLIENTS, GLOBAL_LISTENER, MAX_CLIENTS, SERVER_IP}, vbus::driver::{ControllerDevice, VBusDriver}};
 
 pub async fn start() -> String {
-    let listener = Arc::new(
-        TcpListener::bind(format!("{}:40405", local_ip().unwrap()))
+    let socket = Arc::new(
+        UdpSocket::bind(format!("{}:40405", local_ip().unwrap()))
             .await
             .unwrap(),
     );
@@ -21,7 +20,6 @@ pub async fn start() -> String {
     let notifylistener = Arc::new(Notify::new());
 
     let listenerstate = ListenerState {
-        listener: Arc::new(Mutex::new(Some(listener.clone()))),
         notify: notifylistener.clone(),
     };
 
@@ -32,59 +30,154 @@ pub async fn start() -> String {
 
     let device = Arc::new(VBusDriver);
 
+    // UDP Receive Loop
     tokio::spawn({
-        let listenerstate = listenerstate.clone();
+        let notify = notifylistener.clone();
+        let socket = Arc::clone(&socket);
         let device = Arc::clone(&device);
         async move {
+            let mut buf = [0u8; 1024];
+            let mut device_buffer: [u8; 28] = [0; 28];
+            device_buffer[0] = 0x1C;
+            device_buffer[9] = 0x14;
             loop {
-                let listener_opt = {
-                    let lock = listenerstate.listener.lock().await;
-                    lock.as_ref().cloned()
-                };
+                tokio::select! {
+                    res = socket.recv_from(&mut buf) => {
+                        if let Ok((len, addr)) = res {
+                            if len == 0 { continue; }
+                            let packet_type = buf[0];
 
-                if let Some(listener) = listener_opt {
-                    tokio::select! {
-                        res = listener.accept() => {
-                            match res {
-                                Ok((stream, addr)) => {
-                                    if let Some((_, client_id)) = acquire_client_slot().await {
-                                        println!("Client {} connected from → slot {}", client_id, client_id);
+                            // packet_type: 0x00 = Connect, 0x01 = Data, 0x02 = Disconnect, 0x04 = Heartbeat
+                            if packet_type == 0x00 {
+                                if let Some((slot_idx, client_id)) = acquire_client_slot().await {
+                                    println!("UDP Client {} connected from {}", client_id, addr);
+                                    {
+                                        let mut slots = CLIENT_SLOTS.lock().await;
+                                        slots[slot_idx].addr = Some(addr);
+                                        slots[slot_idx].last_packet_time = Some(Instant::now());
+                                    }
+                                    add_connected_client(addr, slot_idx).await;
+                                    print!("{}", device.plug_in(client_id as u32));
+                                    
+                                    // Send assigned slot back to client (1-based index)
+                                    let mut resp = [0u8; 2];
+                                    resp[0] = 0x00; // Connect Ack
+                                    resp[1] = client_id as u8;
+                                    let _ = socket.send_to(&resp, addr).await;
+                                }
+                            } else if packet_type == 0x01 && len >= 22 {
+                                let slot_idx = buf[1] as usize - 1; // Client slot is 1-based index from packet
+                                if slot_idx < MAX_CLIENTS {
+                                    let mut should_execute = false;
+                                    {
+                                        let mut slots = CLIENT_SLOTS.lock().await;
+                                        let client_slot = &mut slots[slot_idx];
                                         
-                                        let device_inner = Arc::clone(&device);
-                                        let mut token_lock = CLIENT_TOKENS[client_id - 1].lock().await;
-                                        *token_lock = CancellationToken::new();
-                                        let cancel_token = token_lock.clone();
-                                        drop(token_lock);
+                                        if client_slot.occupied && client_slot.addr == Some(addr) {
+                                            client_slot.last_packet_time = Some(Instant::now());
+                                            
+                                            let seq = u32::from_le_bytes([buf[2], buf[3], buf[4], buf[5]]);
+                                            if seq > client_slot.last_sequence {
+                                                client_slot.last_sequence = seq;
+                                                should_execute = true;
+                                            }
+                                        }
+                                    }
 
-                                        add_connected_client(addr).await;
-
-                                        tokio::spawn(async move {
-                                            let mut handler = ClientHandler {
-                                                stream,
-                                                client_id,
-                                                device: device_inner,
-                                                cancel_token,
-                                            };
-                                            handler.init().await;
-                                            release_client_slot(client_id).await;
-                                            println!("fully released client {}", client_id);
-                                        });
-                                    } else {
-                                        println!("No slots available for connection");
+                                    if should_execute {
+                                        let user_index = slot_idx;
+                                        
+                                        // Parse 16-byte state from buf[6..22]
+                                        let w_buttons = u16::from_le_bytes([buf[6], buf[7]]);
+                                        let lt = buf[8];
+                                        let rt = buf[9];
+                                        let lx = i16::from_le_bytes([buf[10], buf[11]]);
+                                        let ly = i16::from_le_bytes([buf[12], buf[13]]);
+                                        let rx = i16::from_le_bytes([buf[14], buf[15]]);
+                                        let ry = i16::from_le_bytes([buf[16], buf[17]]);
+                                        
+                                        let gamepad = XinputGamepad {
+                                            w_buttons,
+                                            b_left_trigger: lt,
+                                            b_right_trigger: rt,
+                                            s_thumb_lx: lx,
+                                            s_thumb_ly: ly,
+                                            s_thumb_rx: rx,
+                                            s_thumb_ry: ry,
+                                        };
+                                        
+                                        let client_id = user_index + 1;
+                                        device_buffer[4] = ((client_id >> 0) & 0xFF) as u8;
+                                        device_buffer[5] = ((client_id >> 8) & 0xFF) as u8;
+                                        device_buffer[6] = ((client_id >> 16) & 0xFF) as u8;
+                                        device_buffer[7] = ((client_id >> 24) & 0xFF) as u8;
+                                        
+                                        device.execute(&gamepad, &mut device_buffer);
                                     }
                                 }
-                                Err(e) => {
-                                    println!("Error accepting connection: {:?}", e);
+                            } else if packet_type == 0x02 {
+                                // Disconnect
+                                let slot_idx = buf[1] as usize - 1;
+                                if slot_idx < MAX_CLIENTS {
+                                    let mut slots = CLIENT_SLOTS.lock().await;
+                                    if slots[slot_idx].occupied && slots[slot_idx].addr == Some(addr) {
+                                        println!("UDP Client disconnected: {}", addr);
+                                        drop(slots);
+                                        release_client_slot(slot_idx + 1, &device).await;
+                                    }
+                                }
+                            } else if packet_type == 0x04 {
+                                // Heartbeat
+                                let slot_idx = buf[1] as usize - 1;
+                                if slot_idx < MAX_CLIENTS {
+                                    let mut slots = CLIENT_SLOTS.lock().await;
+                                    if slots[slot_idx].occupied && slots[slot_idx].addr == Some(addr) {
+                                        slots[slot_idx].last_packet_time = Some(Instant::now());
+                                    }
                                 }
                             }
                         }
-                        _ = notifylistener.notified() => {
-                            println!("Listener stop signal received");
+                    }
+                    _ = notify.notified() => {
+                        println!("UDP Listener stop signal received");
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    // Auto-disconnect background task
+    tokio::spawn({
+        let notify = notifylistener.clone();
+        let device = Arc::clone(&device);
+        async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(500));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let now = Instant::now();
+                        let mut to_remove = Vec::new();
+                        {
+                            let slots = CLIENT_SLOTS.lock().await;
+                            for (i, slot) in slots.iter().enumerate() {
+                                if slot.occupied {
+                                    if let Some(last_time) = slot.last_packet_time {
+                                        if now.duration_since(last_time).as_millis() > 3000 {
+                                            to_remove.push(i);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        for slot_idx in to_remove {
+                            println!("Auto-disconnecting inactive client slot {}", slot_idx + 1);
+                            release_client_slot(slot_idx + 1, &device).await;
                         }
                     }
-                } else {
-                    println!("Listener has been stopped and removed.");
-                    break;
+                    _ = notify.notified() => {
+                        break;
+                    }
                 }
             }
         }
@@ -96,53 +189,30 @@ pub async fn start() -> String {
 
 pub async fn stop() -> String {
 
-    cancel_all_clients_thread().await;
+    cancel_all_clients().await;
 
     let mut listener_guard = GLOBAL_LISTENER.lock().await;
      if let Some(state) = listener_guard.take() {
-        {
-            let mut lock = state.listener.lock().await;
-            *lock = None;
-        }
-
-        state.notify.notify_one();
+        state.notify.notify_waiters();
 
         println!("Listener stopped signaled");
     } else {
         println!("Listener was not running")
     }
 
-    let device = Arc::new(VBusDriver);
-    for i in 1..5 {
-
-        disconnect_client(i.clone() - 1).await;
-
-        let result: Result<i32, Box<dyn Any + Send + 'static>> = std::panic::catch_unwind(|| {
-            device.unplug(i as u32) 
-        });
-
-        match result {
-            Ok(0) => {
-                println!("Failed to unplug controller {}", i);
-            }
-            Ok(_) => {
-                println!("Successfully unplugged controller {}", i);
-            }
-            Err(e) => {
-                println!("Failed to unplug controller {}: panic occurred - {:?}", i, e);
-            }
-        }
-    }
-
-
     "Controller Server stopped!".to_string()
 }
 
-pub async fn cancel_all_clients_thread() {
+pub async fn cancel_all_clients() {
+    let device = Arc::new(VBusDriver);
     for i in 0..MAX_CLIENTS {
-        CLIENT_TOKENS[i].lock().await.cancel();
-        disconnect_client(i).await;
-        println!("Client {} disconnected", i);
+        let occupied = {
+            let slots = CLIENT_SLOTS.lock().await;
+            slots[i].occupied
+        };
+        if occupied {
+            release_client_slot(i + 1, &device).await;
+        }
     }
 }
 
@@ -154,6 +224,7 @@ pub async fn acquire_client_slot() -> Option<(usize, usize)> {
             slot.occupied = true;
             let client_id = i + 1; // use slot number as client id (1-based)
             slot.client_number = Some(client_id);
+            slot.last_sequence = 0;
             return Some((i, client_id));
         }
     }
@@ -161,14 +232,27 @@ pub async fn acquire_client_slot() -> Option<(usize, usize)> {
     None
 }
 
-pub async fn release_client_slot(slot_index: usize) {
+pub async fn release_client_slot(client_id: usize, device: &Arc<VBusDriver>) {
     let mut slots = CLIENT_SLOTS.lock().await;
-    CLIENT_TOKENS[slot_index - 1].lock().await.cancel();
-    disconnect_client(slot_index - 1).await;
+    disconnect_client(client_id - 1).await;
+    
+    let result: Result<i32, Box<dyn Any + Send + 'static>> = std::panic::catch_unwind(|| {
+        device.unplug(client_id as u32) 
+    });
+
+    match result {
+        Ok(0) => println!("Failed to unplug controller {}", client_id),
+        Ok(_) => println!("Successfully unplugged controller {}", client_id),
+        Err(e) => println!("Failed to unplug controller {}: panic occurred - {:?}", client_id, e),
+    }
+
+    let slot_index = client_id - 1;
     if slot_index < MAX_CLIENTS {
-        slots[slot_index - 1].occupied = false;
-        slots[slot_index - 1].client_number = None;
-        print!("Slot release for cliennt {:?}", slots);
+        slots[slot_index].occupied = false;
+        slots[slot_index].client_number = None;
+        slots[slot_index].last_sequence = 0;
+        slots[slot_index].addr = None;
+        slots[slot_index].last_packet_time = None;
     }
 }
 
@@ -179,15 +263,14 @@ pub async fn disconnect_client(index: usize) {
     }
 }
 
-pub async fn add_connected_client(addr: SocketAddr) -> Option<ClientInfo> {
+pub async fn add_connected_client(addr: SocketAddr, slot_index: usize) -> Option<ClientInfo> {
     let mut clients = CONNECTED_CLIENTS.lock().await;
     if clients.len() >= 4 {
         return None;
     }
 
     let ip = addr.ip().to_string();
-    let slot = (1..=4).find(|i| !clients.iter().any(|c| c.slot == *i))?;
-    let info = ClientInfo { ip, slot };
+    let info = ClientInfo { ip, slot: slot_index + 1 };
     clients.push(info.clone());
     Some(info)
 }

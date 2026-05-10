@@ -1,7 +1,6 @@
 use crate::types::{ClientInfo, ServerInfo, CONNECTED_CLIENTS, SERVER_IP};
 
 mod server;
-mod client;
 
 #[tauri::command]
 pub async fn start_server() -> String {
@@ -25,6 +24,7 @@ pub async fn get_server() -> ServerInfo {
 
 #[tauri::command]
 pub async fn disconnect_client_by_index(index: usize) {
-    server::release_client_slot(index).await;
+    let device = std::sync::Arc::new(crate::vbus::driver::VBusDriver);
+    server::release_client_slot(index, &device).await;
 }
 

@@ -108,8 +108,6 @@ impl ControllerDevice for VBusDriver {
                 slice::from_raw_parts(gamepad as *const XinputGamepad as *const u8, mem::size_of::<XinputGamepad>());
             
             buffer[10..(10 + gamepad_slice.len())].copy_from_slice(gamepad_slice);
-            
-            thread::sleep(time::Duration::from_millis(2));
         }
 
         let mut output: [u8; FEEDBACK_BUFFER_LENGTH] = [0; FEEDBACK_BUFFER_LENGTH];
